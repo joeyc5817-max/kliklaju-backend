@@ -1,8 +1,16 @@
-// /api/createBill.js
-// Vercel serverless function that creates a Billplz bill
-// and returns the payment URL to the frontend.
+// api/createBill.js
 
 export default async function handler(req, res) {
+  // --- FIX CORS ---
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Handle OPTIONS (preflight)
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   // Only allow POST
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
@@ -10,7 +18,6 @@ export default async function handler(req, res) {
 
   try {
     const { orderData } = req.body || {};
-
     if (!orderData) {
       return res.status(400).json({ error: "orderData is required" });
     }
@@ -20,7 +27,7 @@ export default async function handler(req, res) {
       buyer_email,
       buyer_phone,
       total_amount,
-      order_number,
+      order_number
     } = orderData;
 
     if (!buyer_name || !buyer_email || !total_amount) {
@@ -29,80 +36,54 @@ export default async function handler(req, res) {
       });
     }
 
-    // Read Billplz config from Vercel environment variables
+    // Load environment variables
     const apiKey = process.env.BILLPLZ_API_KEY;
     const collectionId = process.env.BILLPLZ_COLLECTION_ID;
     const isSandbox = process.env.BILLPLZ_SANDBOX === "true";
 
     if (!apiKey || !collectionId) {
-      return res
-        .status(500)
-        .json({ error: "Billplz is not configured on the server" });
+      return res.status(500).json({
+        error: "Billplz keys are not configured on the server",
+      });
     }
 
-    // Base URL – sandbox vs live
+    // Base URL
     const baseUrl = isSandbox
       ? "https://www.billplz-sandbox.com/api/v3"
       : "https://www.billplz.com/api/v3";
 
-    // This is your Vercel backend base URL
-    // You can override it with BACKEND_BASE_URL env if you want.
-    const backendBaseUrl =
-      process.env.BACKEND_BASE_URL || "https://kliklaju-backend.vercel.app";
-
-    const callbackUrl = `${backendBaseUrl}/api/billplzCallback`;
-    const redirectUrl = `${backendBaseUrl}/api/billplzRedirect`;
-
-    // Billplz expects amount in sen (RM * 100)
-    const amountInSen = Math.round(Number(total_amount) * 100);
-
-    const params = new URLSearchParams({
-      collection_id: collectionId,
-      email: buyer_email,
-      name: buyer_name,
-      amount: String(amountInSen),
-      description: "Order " + (order_number || ""),
-      callback_url: callbackUrl,
-      redirect_url: redirectUrl,
-      reference_1_label: "Order Number",
-      reference_1: order_number || "",
-    });
-
-    if (buyer_phone) {
-      params.append("mobile", buyer_phone);
-    }
-
-    // Call Billplz
+    // Create Bill
     const response = await fetch(`${baseUrl}/bills`, {
       method: "POST",
       headers: {
-        Authorization:
-          "Basic " + Buffer.from(apiKey + ":").toString("base64"),
-        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic " + Buffer.from(apiKey + ":").toString("base64"),
+        "Content-Type": "application/json",
       },
-      body: params.toString(),
+      body: JSON.stringify({
+        collection_id: collectionId,
+        email: buyer_email,
+        name: buyer_name,
+        amount: Math.round(total_amount * 100), // Convert to cents
+        description: `Order ${order_number}`,
+        callback_url: `${req.headers.origin}/api/billplzCallback`,
+        redirect_url: `${req.headers.origin}/api/billplzRedirect`,
+      }),
     });
 
-    const text = await response.text();
+    const bill = await response.json();
 
-    if (!response.ok) {
-      console.error("Billplz API error:", response.status, text);
-      return res
-        .status(500)
-        .json({ error: "Failed to create Billplz bill" });
+    if (!bill || !bill.url) {
+      return res.status(500).json({
+        error: "Billplz did not return a URL",
+        details: bill,
+      });
     }
 
-    const bill = JSON.parse(text);
-
-    // Send the payment URL back to the frontend
-    return res.status(200).json({
-      url: bill.url,
-      bill_id: bill.id,
-    });
+    return res.status(200).json({ url: bill.url });
   } catch (err) {
-    console.error("createBill error:", err);
-    return res
-      .status(500)
-      .json({ error: "Server error", details: err.message });
+    return res.status(500).json({
+      error: "Server error",
+      details: err.message,
+    });
   }
 }
